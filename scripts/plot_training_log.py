@@ -1,13 +1,13 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
-from scripts._init_ import BASE_ROOT,OUTPUT_DIR,DATA_DIR
+from scripts._init_ import BASE_ROOT,output_dir,DATA_DIR
 
 
 
 
 # 读取日志
-df = pd.read_csv(OUTPUT_DIR/'training_log.csv')
+df = pd.read_csv(output_dir / 'training_log.csv')
 epochs = df['epoch'].values
 
 # ---------- 1. Loss 曲线 ----------
@@ -27,7 +27,7 @@ ax.set_title('Training and Validation Loss', fontsize=14)
 ax.legend()
 ax.grid(True, alpha=0.3)
 plt.tight_layout()
-plt.savefig(OUTPUT_DIR/'loss_curve.png', dpi=300)
+plt.savefig(output_dir / 'loss_curve.png', dpi=300)
 plt.close()
 
 # ---------- 2. Accuracy 曲线 ----------
@@ -47,7 +47,7 @@ ax.set_title('Training and Validation Accuracy', fontsize=14)
 ax.legend()
 ax.grid(True, alpha=0.3)
 plt.tight_layout()
-plt.savefig(OUTPUT_DIR/'accuracy_curve.png', dpi=300)
+plt.savefig(output_dir / 'accuracy_curve.png', dpi=300)
 plt.close()
 
 # ---------- 3. Learning Rate 曲线 ----------
@@ -60,7 +60,7 @@ ax.grid(True, alpha=0.3)
 # 学习率曲线不标注红点，如果需要也可以标出变化点，但题目要求“最佳 epoch 用红点标注”，通常指验证集最佳，学习率一般不标。
 # 但为了统一，我们可标出学习率变化的位置，这里略过。
 plt.tight_layout()
-plt.savefig(OUTPUT_DIR/'lr_curve.png', dpi=300)
+plt.savefig(output_dir / 'lr_curve.png', dpi=300)
 plt.close()
 
 print("三张曲线图已生成: loss_curve.png, accuracy_curve.png, lr_curve.png")

@@ -10,3 +10,4 @@ jupyter
 pyyaml
 torch
 torchvision
+c2net

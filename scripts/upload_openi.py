@@ -4,4 +4,4 @@ from _init_ import DATA_DIR
 
 openi.login(token='0ec626ba6fdac57e828ec0b3bb67601b544b2483')
 
-openi_upload_file(repo_id="zhangyun_cqupt/OxfordPet", file_or_folder_path=DATA_DIR/'oxford-iiit-pet.zip')
+openi_upload_file(repo_id="zhangyun_cqupt/new_oxfordpet", file_or_folder_path=DATA_DIR/'oxford-iiit-pet')

@@ -25,7 +25,7 @@ c2net_context = prepare()
 # 注意：OpenI 上的 Oxford-IIIT Pet 数据集可能需要先上传或挂载。
 # 假设数据集挂载在 dataset_path 下，这里直接使用 dataset_path 作为根目录
 # 如果数据集不存在，torchvision 会自动下载到该目录（需要写权限）
-DATA_DIR = c2net_context.dataset_path + '/OxfordPet'  # 若名字不同请修改
+DATA_DIR = c2net_context.dataset_path + '/new_oxfordpet'  # 若名字不同请修改
 OUTPUT_DIR = c2net_context.output_path + '/m2_task3_pet_unet'
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 

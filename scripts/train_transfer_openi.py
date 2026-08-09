@@ -24,6 +24,7 @@ c2net_context = prepare()
 # 复用 CIFAR-10 数据集路径（与你的 Notebook 保持一致）
 DATA_DIR = c2net_context.dataset_path + '/CIFAR-10'
 BASE_OUTPUT = c2net_context.output_path + '/m2_task4_transfer'
+MODEL_PATH = c2net_context.pretrain_model_path+'/resnet18'
 os.makedirs(BASE_OUTPUT, exist_ok=True)
 
 # ==================== 固定设置 ====================
@@ -110,19 +111,52 @@ def get_dataloaders():
 
 # ==================== 3. 模型创建 ====================
 def create_model(strategy):
-    if strategy == "scratch":
-        model = models.resnet18(weights=None)
-    else:
-        model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
+    # 先构建一个不带权重的模型
+    model = models.resnet18(weights=None)
     model.fc = nn.Linear(512, NUM_CLASSES)
+
+    if strategy != "scratch":
+        # 尝试从 OpenI 预训练模型路径加载
+        pretrain_path = getattr(c2net_context, 'pretrain_model_path', None)
+        if pretrain_path and os.path.exists(pretrain_path):
+            # 直接加载整个模型权重（注意：需要与 ResNet18 结构匹配）
+            state_dict = torch.load(pretrain_path, map_location='cpu')
+            # 去除 fc 层权重（因为我们的 fc 不同）
+            state_dict.pop('fc.weight', None)
+            state_dict.pop('fc.bias', None)
+            model.load_state_dict(state_dict, strict=False)
+            print(f"✅ 从 {pretrain_path} 加载预训练权重")
+        else:
+            # 如果平台未提供，尝试从本地缓存加载
+            cache_path = '/root/.cache/torch/hub/checkpoints/resnet18-f37072fd.pth'
+            if os.path.exists(cache_path):
+                state_dict = torch.load(cache_path, map_location='cpu')
+                state_dict.pop('fc.weight', None)
+                state_dict.pop('fc.bias', None)
+                model.load_state_dict(state_dict, strict=False)
+                print(f"✅ 从缓存加载预训练权重: {cache_path}")
+            else:
+                # 最后尝试下载（但可能卡住）
+                print("⚠️ 本地权重不存在，尝试在线下载...")
+                state_dict = torch.hub.load_state_dict_from_url(
+                    'https://download.pytorch.org/models/resnet18-f37072fd.pth',
+                    map_location='cpu',
+                    progress=False,  # 关闭进度条，避免卡住
+                    check_hash=True
+                )
+                state_dict.pop('fc.weight', None)
+                state_dict.pop('fc.bias', None)
+                model.load_state_dict(state_dict, strict=False)
+    else:
+        print("Scratch: 随机初始化权重")
 
     if strategy == "linear_probe":
         for param in model.parameters():
             param.requires_grad = False
         for param in model.fc.parameters():
             param.requires_grad = True
-    return model
 
+    return model
 
 def count_trainable_params(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)

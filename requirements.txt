@@ -12,3 +12,5 @@ torch~=2.13.0+cpu
 torchvision~=0.28.0+cpu
 c2net~=0.2.0
 openi~=3.0.1
+nibabel~=5.4.2
+pydicom~=3.0.2

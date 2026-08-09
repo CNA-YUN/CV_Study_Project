@@ -59,10 +59,10 @@ def create_splits():
     """生成 train/val/test 划分，保存 split 文件到 output 目录"""
     # 注意：由于 OpenI 可能不允许在 dataset_path 写入，split 文件保存在 output 目录
     full_trainval = datasets.OxfordIIITPet(
-        root=OUTPUT_DIR, split="trainval", target_types="segmentation", download=True
+        root=DATA_DIR, split="trainval", target_types="segmentation", download=True
     )
     full_test = datasets.OxfordIIITPet(
-        root=OUTPUT_DIR, split="test", target_types="segmentation", download=True
+        root=DATA_DIR, split="test", target_types="segmentation", download=True
     )
 
     trainval_filenames = sorted([full_trainval.images[i].stem for i in range(len(full_trainval))])

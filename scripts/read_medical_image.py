@@ -98,9 +98,9 @@ def plot_three_views(image, label, case_name, title_prefix="", is_2d=False):
 
 # ==================== 1. DICOM 处理 ====================
 def process_dicom():
-    print("\n" + "="*50)
+    print("\n" + "=" * 50)
     print("处理 DICOM 文件: CT_small.dcm")
-    print("="*50)
+    print("=" * 50)
 
     # 获取测试文件
     dcm_files = get_testdata_files("CT_small.dcm")
@@ -136,12 +136,13 @@ def process_dicom():
     h, w = pixel_array.shape
     pseudo_label = np.zeros_like(pixel_array, dtype=np.uint8)
     # 在图像中心画一个矩形作为模拟前景
-    pseudo_label[h//4:3*h//4, w//4:3*w//4] = 1
+    pseudo_label[h // 4:3 * h // 4, w // 4:3 * w // 4] = 1
 
     # 生成三视图（2D 模式，所有视图显示同一张切片）
     plot_three_views(pixel_array, pseudo_label, "CT_small_dcm", title_prefix="DICOM", is_2d=True)
 
     return metadata
+
 
 # ==================== 2. NIfTI 处理 ====================
 def process_nifti_case(image_path, label_path, case_idx):

@@ -25,7 +25,7 @@ c2net_context = prepare()
 # 注意：OpenI 上的 Oxford-IIIT Pet 数据集可能需要先上传或挂载。
 # 假设数据集挂载在 dataset_path 下，这里直接使用 dataset_path 作为根目录
 # 如果数据集不存在，torchvision 会自动下载到该目录（需要写权限）
-DATA_DIR = c2net_context.dataset_path + '/new_oxfordpet'  # 若名字不同请修改
+DATA_DIR = c2net_context.dataset_path + '/OxfordPet'  # 若名字不同请修改
 OUTPUT_DIR = c2net_context.output_path + '/m2_task3_pet_unet'
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -59,10 +59,10 @@ def create_splits():
     """生成 train/val/test 划分，保存 split 文件到 output 目录"""
     # 注意：由于 OpenI 可能不允许在 dataset_path 写入，split 文件保存在 output 目录
     full_trainval = datasets.OxfordIIITPet(
-        root=DATA_DIR, split="trainval", target_types="segmentation", download=True
+        root=OUTPUT_DIR, split="trainval", target_types="segmentation", download=True
     )
     full_test = datasets.OxfordIIITPet(
-        root=DATA_DIR, split="test", target_types="segmentation", download=True
+        root=OUTPUT_DIR, split="test", target_types="segmentation", download=True
     )
 
     trainval_filenames = sorted([full_trainval.images[i].stem for i in range(len(full_trainval))])
@@ -349,4 +349,4 @@ with open(os.path.join(OUTPUT_DIR, "config.yaml"), "w") as f:
 
 print(f"\n所有产物已保存至: {OUTPUT_DIR}")
 # 如果训练任务，可调用 upload_output() 回传
-# upload_output()
+upload_output()

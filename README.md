@@ -4,17 +4,17 @@
 
 本项目完整的环境配置
 
-## /scripts
+### /scripts
 适合本地运行的 py 脚本文件
 
-## /scripts_openi
+### /scripts_openi
 适用于  [OpenI(启智)算力平台](https://openi.pcl.ac.cn/) 在线训练的 py 脚本文件
 
-## /src
+### /src
 
 Jupyter Notebook 文件
 
-## requirements.txt
+### requirements.txt
 本项目必需的环境与第三方库
 
 

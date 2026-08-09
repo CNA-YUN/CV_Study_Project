@@ -28,7 +28,7 @@ os.makedirs(BASE_OUTPUT, exist_ok=True)
 
 # ==================== 固定设置 ====================
 SEED = 42
-BATCH_SIZE = 64
+BATCH_SIZE = 128
 EPOCHS = 15
 INPUT_SIZE = 224
 NUM_CLASSES = 10
@@ -103,9 +103,9 @@ def get_dataloaders():
     val_subset = Subset(full_train, split["val"])
     test_subset = Subset(full_test, split["test"])
 
-    return (DataLoader(train_subset, BATCH_SIZE, shuffle=True, num_workers=0),
-            DataLoader(val_subset, BATCH_SIZE, shuffle=False, num_workers=0),
-            DataLoader(test_subset, BATCH_SIZE, shuffle=False, num_workers=0))
+    return (DataLoader(train_subset, BATCH_SIZE, shuffle=True, num_workers=4),
+            DataLoader(val_subset, BATCH_SIZE, shuffle=False, num_workers=4),
+            DataLoader(test_subset, BATCH_SIZE, shuffle=False, num_workers=4))
 
 
 # ==================== 3. 模型创建 ====================

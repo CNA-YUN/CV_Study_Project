@@ -1,14 +1,12 @@
 import os
 import random
-import json
-import time
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
-from torchvision import datasets, transforms
+from torchvision import transforms
 from PIL import Image
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -17,29 +15,44 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
-# ==================== OpenI 环境初始化（参考你的 ipynb） ====================
-from c2net.context import prepare, upload_output
+# ==================== OpenI 环境初始化 ====================
+from c2net.context import prepare
 
 c2net_context = prepare()
 
-# 注意：OpenI 上的 Oxford-IIIT Pet 数据集可能需要先上传或挂载。
-# 假设数据集挂载在 dataset_path 下，这里直接使用 dataset_path 作为根目录
-# 如果数据集不存在，torchvision 会自动下载到该目录（需要写权限）
-DATA_DIR = c2net_context.dataset_path + '/OxfordPet'  # 若名字不同请修改
+# ==================== 显式指定路径（根据你的反馈设置） ====================
+# 基础挂载路径
+BASE_DATA_DIR = c2net_context.dataset_path + '/OxfordPet'
+# 核心：进入 oxford-iiit-pet 子目录
+DATA_DIR = os.path.join(BASE_DATA_DIR, 'oxford-iiit-pet')
+
+# 图像和标注的具体文件夹
+IMAGE_DIR = os.path.join(DATA_DIR, 'images')
+TRIMAP_DIR = os.path.join(DATA_DIR, 'annotations', 'trimaps')
+
+# 输出路径
 OUTPUT_DIR = c2net_context.output_path + '/m2_task3_pet_unet'
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+# 检查路径是否存在，提前报错
+if not os.path.exists(IMAGE_DIR):
+    raise FileNotFoundError(f"图像目录不存在: {IMAGE_DIR}")
+if not os.path.exists(TRIMAP_DIR):
+    raise FileNotFoundError(f"标注目录不存在: {TRIMAP_DIR}")
+
+print(f"✅ 图像路径: {IMAGE_DIR}")
+print(f"✅ 标签路径: {TRIMAP_DIR}")
+print(f"✅ 输出路径: {OUTPUT_DIR}")
+
 # ==================== 固定设置 ====================
 SEED = 42
-BATCH_SIZE = 8
+BATCH_SIZE = 8  # 显存不够可改为 4
 EPOCHS = 30
 LR = 1e-3
 WEIGHT_DECAY = 1e-4
 IMAGE_SIZE = 256
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
-print(f"Data path: {DATA_DIR}")
-print(f"Output path: {OUTPUT_DIR}")
 
 
 def set_seed(seed):
@@ -54,31 +67,31 @@ def set_seed(seed):
 set_seed(SEED)
 
 
-# ==================== 1. 数据划分（严格按文档要求） ====================
+# ==================== 1. 数据划分（直接从文件夹读取文件名） ====================
 def create_splits():
-    """生成 train/val/test 划分，保存 split 文件到 output 目录"""
-    # 注意：由于 OpenI 可能不允许在 dataset_path 写入，split 文件保存在 output 目录
-    full_trainval = datasets.OxfordIIITPet(
-        root=DATA_DIR, split="trainval", target_types="segmentation", download=True
-    )
-    full_test = datasets.OxfordIIITPet(
-        root=DATA_DIR, split="test", target_types="segmentation", download=True
-    )
+    """生成 train/val/test 划分，保存 split 文件"""
+    # 获取所有图像文件名（不含扩展名），并排序保证可复现
+    all_files = sorted([f for f in os.listdir(IMAGE_DIR) if f.endswith(('.jpg', '.png', '.jpeg'))])
+    all_names = sorted([os.path.splitext(f)[0] for f in all_files])
 
-    trainval_filenames = sorted([full_trainval.images[i].stem for i in range(len(full_trainval))])
-    test_filenames = sorted([full_test.images[i].stem for i in range(len(full_test))])
+    print(f"总共找到 {len(all_names)} 张图像")
 
-    rng_trainval = np.random.default_rng(42)
-    rng_test = np.random.default_rng(42)
+    # 使用固定随机种子打乱顺序
+    rng = np.random.default_rng(42)
+    perm = rng.permutation(len(all_names))
 
-    trainval_perm = rng_trainval.permutation(len(trainval_filenames))
-    test_perm = rng_test.permutation(len(test_filenames))
+    # 按文档要求：前1000训练，接下来200验证，再接下来200测试
+    # 如果总数不够，则按实际数量分配
+    total = len(all_names)
+    train_end = min(1000, total)
+    val_end = min(1200, total)
+    test_end = min(1400, total)
 
-    train_names = [trainval_filenames[i] for i in trainval_perm[:1000]]
-    val_names = [trainval_filenames[i] for i in trainval_perm[1000:1200]]
-    test_names = [test_filenames[i] for i in test_perm[:200]]
+    train_names = [all_names[i] for i in perm[:train_end]]
+    val_names = [all_names[i] for i in perm[train_end:val_end]]
+    test_names = [all_names[i] for i in perm[val_end:test_end]]
 
-    # 保存到 output 目录（方便下载查看）
+    # 保存 split 文件（方便查看）
     with open(os.path.join(OUTPUT_DIR, "split_train.txt"), "w") as f:
         f.write("\n".join(train_names))
     with open(os.path.join(OUTPUT_DIR, "split_val.txt"), "w") as f:
@@ -90,33 +103,46 @@ def create_splits():
 
 
 train_names, val_names, test_names = create_splits()
-print(f"Train: {len(train_names)}, Val: {len(val_names)}, Test: {len(test_names)}")
+print(f"训练集: {len(train_names)}, 验证集: {len(val_names)}, 测试集: {len(test_names)}")
 
 
 # ==================== 2. 自定义 Dataset ====================
 class PetSegDataset(Dataset):
-    def __init__(self, names, split, transform=None, target_transform=None):
+    def __init__(self, names, transform=None, target_transform=None):
         self.names = names
-        self.split = split
         self.transform = transform
         self.target_transform = target_transform
-        self.dataset = datasets.OxfordIIITPet(
-            root=DATA_DIR, split=split, target_types="segmentation", download=True
-        )
-        self.name_to_idx = {self.dataset.images[i].stem: i for i in range(len(self.dataset))}
 
     def __len__(self):
         return len(self.names)
 
     def __getitem__(self, idx):
         name = self.names[idx]
-        data_idx = self.name_to_idx[name]
-        image, trimap = self.dataset[data_idx]
-        mask = (trimap != 2).long()
+        # 图像路径（尝试 jpg，如果不存在则尝试 png）
+        img_path = os.path.join(IMAGE_DIR, name + '.jpg')
+        if not os.path.exists(img_path):
+            img_path = os.path.join(IMAGE_DIR, name + '.png')
+
+        # 标签路径（trimap 通常是 png）
+        trimap_path = os.path.join(TRIMAP_DIR, name + '.png')
+
+        # 读取图像
+        image = Image.open(img_path).convert('RGB')
+        # 读取 trimap
+        trimap = Image.open(trimap_path)
+
+        # 将 trimap 转为二值 mask：前景 = (像素值 != 2)，背景为 0，前景为 1
+        mask_array = (np.array(trimap) != 2).astype(np.int64)
+        mask = Image.fromarray(mask_array)
+
         if self.transform:
             image = self.transform(image)
         if self.target_transform:
             mask = self.target_transform(mask)
+        else:
+            # 默认转为 Tensor，保持 long 类型
+            mask = torch.from_numpy(np.array(mask)).long()
+
         return image, mask.float()
 
 
@@ -139,19 +165,20 @@ val_test_transform = transforms.Compose([
 
 mask_transform = transforms.Compose([
     transforms.Resize((IMAGE_SIZE, IMAGE_SIZE), interpolation=transforms.InterpolationMode.NEAREST),
-    transforms.ToTensor(),
+    transforms.ToTensor(),  # 转为 [1, H, W] 的 float tensor，值为 0/1
 ])
 
-train_dataset = PetSegDataset(train_names, "trainval", train_transform, mask_transform)
-val_dataset = PetSegDataset(val_names, "trainval", val_test_transform, mask_transform)
-test_dataset = PetSegDataset(test_names, "test", val_test_transform, mask_transform)
+# 创建 Dataset 和 DataLoader
+train_dataset = PetSegDataset(train_names, transform=train_transform, target_transform=mask_transform)
+val_dataset = PetSegDataset(val_names, transform=val_test_transform, target_transform=mask_transform)
+test_dataset = PetSegDataset(test_names, transform=val_test_transform, target_transform=mask_transform)
 
 train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
 val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
 
-# ==================== 4. U-Net 模型 ====================
+# ==================== 4. 模型定义（U-Net） ====================
 class DoubleConv(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
@@ -210,7 +237,7 @@ class UNet(nn.Module):
         return self.final_conv(x)
 
 
-# ==================== 5. Dice Loss ====================
+# ==================== 5. Dice Loss 和评估函数 ====================
 class DiceLoss(nn.Module):
     def __init__(self, smooth=1.0):
         super().__init__()
@@ -233,7 +260,7 @@ def compute_dice(pred, target, eps=1e-7):
     return (2. * intersection + eps) / (pred.sum(dim=1) + target.sum(dim=1) + eps)
 
 
-# ==================== 6. 训练主流程 ====================
+# ==================== 6. 训练主循环 ====================
 model = UNet().to(device)
 criterion_bce = nn.BCEWithLogitsLoss()
 criterion_dice = DiceLoss(smooth=1.0)
@@ -244,7 +271,7 @@ best_val_dice = 0.0
 log_data = []
 
 for epoch in range(1, EPOCHS + 1):
-    # Training
+    # --- 训练 ---
     model.train()
     train_loss = 0.0
     for images, masks in tqdm(train_loader, desc=f"Epoch {epoch}/{EPOCHS}"):
@@ -257,7 +284,7 @@ for epoch in range(1, EPOCHS + 1):
         train_loss += loss.item() * images.size(0)
     train_loss /= len(train_loader.dataset)
 
-    # Validation
+    # --- 验证 ---
     model.eval()
     val_loss = 0.0
     val_dice = []
@@ -280,9 +307,9 @@ for epoch in range(1, EPOCHS + 1):
     if mean_val_dice > best_val_dice:
         best_val_dice = mean_val_dice
         torch.save(model.state_dict(), os.path.join(OUTPUT_DIR, "best_model.pth"))
-        print(f"  -> Best model saved (Val Dice: {best_val_dice:.4f})")
+        print(f"  -> ✅ Best model saved (Val Dice: {best_val_dice:.4f})")
 
-# 保存日志和曲线
+# ==================== 7. 保存训练日志和曲线 ====================
 df = pd.DataFrame(log_data, columns=["epoch", "train_loss", "val_loss", "val_dice", "lr"])
 df.to_csv(os.path.join(OUTPUT_DIR, "training_log.csv"), index=False)
 
@@ -304,11 +331,12 @@ plt.tight_layout()
 plt.savefig(os.path.join(OUTPUT_DIR, "curves.png"), dpi=150)
 plt.close()
 
-# ==================== 7. 测试评估 ====================
+# ==================== 8. 测试评估 ====================
 model.load_state_dict(torch.load(os.path.join(OUTPUT_DIR, "best_model.pth"), map_location=device))
 model.eval()
 results = []
 eps = 1e-7
+
 with torch.no_grad():
     for images, masks in test_loader:
         images, masks = images.to(device), masks.to(device)
@@ -329,24 +357,34 @@ with torch.no_grad():
 
 df_test = pd.DataFrame(results)
 df_test.to_csv(os.path.join(OUTPUT_DIR, "test_metrics.csv"), index=False)
+
 summary = pd.DataFrame({
     "metric": ["dice", "iou", "precision", "recall"],
     "mean": [df_test["dice"].mean(), df_test["iou"].mean(), df_test["precision"].mean(), df_test["recall"].mean()],
     "std": [df_test["dice"].std(), df_test["iou"].std(), df_test["precision"].std(), df_test["recall"].std()]
 })
 summary.to_csv(os.path.join(OUTPUT_DIR, "test_metrics_summary.csv"), index=False)
-print("\n=== Test Results ===")
+
+print("\n" + "=" * 40)
+print("测试集最终结果（宏平均 ± 标准差）")
+print("=" * 40)
 print(summary.to_string(index=False))
 
-# ==================== 8. 保存配置并回传 ====================
+# ==================== 9. 保存配置 ====================
 config = {
-    "seed": SEED, "batch_size": BATCH_SIZE, "epochs": EPOCHS,
-    "learning_rate": LR, "weight_decay": WEIGHT_DECAY, "image_size": IMAGE_SIZE,
-    "model": "UNet", "device": str(device),
+    "seed": SEED,
+    "batch_size": BATCH_SIZE,
+    "epochs": EPOCHS,
+    "learning_rate": LR,
+    "weight_decay": WEIGHT_DECAY,
+    "image_size": IMAGE_SIZE,
+    "model": "UNet",
+    "device": str(device),
+    "data_dir": DATA_DIR,
 }
 with open(os.path.join(OUTPUT_DIR, "config.yaml"), "w") as f:
     yaml.dump(config, f)
 
-print(f"\n所有产物已保存至: {OUTPUT_DIR}")
-# 如果训练任务，可调用 upload_output() 回传
-upload_output()
+print(f"\n🎉 所有产物已保存至: {OUTPUT_DIR}")
+# 如果是训练任务，取消下面的注释以回传结果
+# upload_output()

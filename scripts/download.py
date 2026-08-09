@@ -1,3 +1,4 @@
+# 下载 数据集 或 模型
 from torchvision import datasets
 from _init_ import BASE_ROOT,DATA_DIR
 full_dataset = datasets.OxfordIIITPet(

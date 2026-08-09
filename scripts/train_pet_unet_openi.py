@@ -132,7 +132,7 @@ class PetSegDataset(Dataset):
         trimap = Image.open(trimap_path)
 
         # 将 trimap 转为二值 mask：前景 = (像素值 != 2)，背景为 0，前景为 1
-        mask_array = (np.array(trimap) != 2).astype(np.int64)
+        mask_array = (np.array(trimap) != 2).astype(np.uint8)*255
         mask = Image.fromarray(mask_array)
 
         if self.transform:

@@ -46,7 +46,7 @@ print(f"✅ 输出路径: {OUTPUT_DIR}")
 
 # ==================== 固定设置 ====================
 SEED = 42
-BATCH_SIZE = 8  # 显存不够可改为 4
+BATCH_SIZE = 64  # 显存不够可改为 4
 EPOCHS = 30
 LR = 1e-3
 WEIGHT_DECAY = 1e-4
@@ -132,7 +132,7 @@ class PetSegDataset(Dataset):
         trimap = Image.open(trimap_path)
 
         # 将 trimap 转为二值 mask：前景 = (像素值 != 2)，背景为 0，前景为 1
-        mask_array = (np.array(trimap) != 2).astype(np.uint8)*255
+        mask_array = (np.array(trimap) != 2).astype(np.uint8) * 255
         mask = Image.fromarray(mask_array)
 
         if self.transform:
@@ -173,9 +173,9 @@ train_dataset = PetSegDataset(train_names, transform=train_transform, target_tra
 val_dataset = PetSegDataset(val_names, transform=val_test_transform, target_transform=mask_transform)
 test_dataset = PetSegDataset(test_names, transform=val_test_transform, target_transform=mask_transform)
 
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
-val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
-test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
+val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
+test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
 
 
 # ==================== 4. 模型定义（U-Net） ====================

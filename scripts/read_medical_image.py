@@ -8,6 +8,8 @@ from pydicom.data import get_testdata_files
 import glob
 from pathlib import Path
 import warnings
+from matplotlib.patches import Rectangle
+from skimage import measure
 
 warnings.filterwarnings("ignore")
 
@@ -21,79 +23,181 @@ print(f"数据根目录: {DATA_ROOT}")
 print(f"输出目录: {OUTPUT_DIR}")
 
 
-# ==================== 通用工具函数 ====================
-def get_foreground_center(volume, label, axis):
-    """
-    获取包含前景（label>0）的中心切片坐标
-    axis: 0=冠状(Y轴投影), 1=矢状(X轴投影), 2=轴向(Z轴投影)
-    """
-    # 计算每个切片上是否有前景
-    if axis == 0:  # 冠状面，沿 Y 轴投影
-        proj = np.sum(label, axis=(1, 2))
-    elif axis == 1:  # 矢状面，沿 X 轴投影
-        proj = np.sum(label, axis=(0, 2))
-    elif axis == 2:  # 轴向面，沿 Z 轴投影
-        proj = np.sum(label, axis=(0, 1))
-    else:
-        raise ValueError("axis must be 0, 1, or 2")
-
-    # 找到有前景的切片索引
-    fg_indices = np.where(proj > 0)[0]
-    if len(fg_indices) == 0:
-        # 如果没有前景，取体积中间切片
-        return volume.shape[axis] // 2
-    # 取前景区域的中间索引
-    return fg_indices[len(fg_indices) // 2]
-
-
 def plot_three_views(image, label, case_name, title_prefix="", is_2d=False):
     """
-    绘制 axial / coronal / sagittal 三视图
-    image: 3D numpy 数组 (Z, Y, X)
-    label: 3D numpy 数组
-    is_2d: 如果为 True，则所有视图都显示同一张切片（用于 DICOM 单切片）
+    绘制 axial / coronal / sagittal 三视图（论文级配图，含物理比例和方向标注）
+
+    参数：
+        image: 3D (Z,Y,X) 或 2D 数组
+        label: 3D (Z,Y,X) 或 2D 标签
+        case_name: 病例名称
+        title_prefix: 前缀（如 "NIfTI"）
+        is_2d: 若为 True，则所有视图显示同一张切片（用于 DICOM）
     """
+    # ---- 处理 2D 单切片 ----
     if is_2d or image.ndim == 2:
-        # 如果是 2D 图像，所有视图显示同一张切片的不同旋转/转置
         if image.ndim == 2:
             img_slice = image
             lbl_slice = label if label.ndim == 2 else label[0]
         else:
-            # 取中间切片
             mid = image.shape[0] // 2
             img_slice = image[mid]
             lbl_slice = label[mid] if label.ndim == 3 else label
 
-        # 生成三张图：轴向显示原图，冠状显示旋转90度，矢状显示旋转-90度
+        # 生成三张不同旋转的视图（仅示意，无物理比例）
         slices = [
             (img_slice, lbl_slice, "Axial (Z)"),
-            (np.rot90(img_slice, k=1), np.rot90(lbl_slice, k=1), "Coronal (Y, rotated)"),
-            (np.rot90(img_slice, k=-1), np.rot90(lbl_slice, k=-1), "Sagittal (X, rotated)"),
+            (np.rot90(img_slice, k=1), np.rot90(lbl_slice, k=1), "Coronal (rotated)"),
+            (np.rot90(img_slice, k=-1), np.rot90(lbl_slice, k=-1), "Sagittal (rotated)"),
         ]
-
         fig, axes = plt.subplots(1, 3, figsize=(15, 5))
         for ax, (img_s, lbl_s, title) in zip(axes, slices):
-            # 归一化显示
             img_display = np.clip(img_s, 0, np.percentile(img_s, 99))
             if img_display.max() - img_display.min() > 1e-6:
                 img_display = (img_display - img_display.min()) / (img_display.max() - img_display.min() + 1e-8)
             ax.imshow(img_display, cmap='gray')
-            # 标签轮廓（红色）
             if np.sum(lbl_s) > 0:
-                from skimage import measure
                 contours = measure.find_contours(lbl_s, 0.5)
                 for contour in contours:
                     ax.plot(contour[:, 1], contour[:, 0], linewidth=1, color='red')
             ax.set_title(title)
             ax.axis('off')
-
-        plt.suptitle(f"{title_prefix} {case_name} (2D DICOM)", fontsize=14)
+        plt.suptitle(f"{title_prefix} {case_name} (2D)", fontsize=14)
         plt.tight_layout()
+        # 保存路径沿用你的 OUTPUT_DIR
         save_path = OUTPUT_DIR / f"{case_name}_three_views.png"
         plt.savefig(save_path, dpi=150)
         plt.close()
         print(f"  -> 三视图已保存: {save_path}")
         return
+
+    # ---- 以下是 3D 体数据的专业配图 ----
+    # 注意：这里假设 image 和 label 的 shape 为 (Z, Y, X)
+    # 修正 get_foreground_center 的轴映射（此处内联实现，避免依赖外部错误函数）
+    def get_center(vol, lbl, axis):
+        # axis: 0=Z(轴向), 1=Y(冠状), 2=X(矢状)
+        if axis == 0:
+            proj = np.sum(lbl, axis=(1, 2))
+        elif axis == 1:
+            proj = np.sum(lbl, axis=(0, 2))
+        elif axis == 2:
+            proj = np.sum(lbl, axis=(0, 1))
+        else:
+            raise ValueError
+        if np.sum(proj) == 0:
+            return vol.shape[axis] // 2
+        indices = np.arange(len(proj))
+        return int(round(np.average(indices, weights=proj)))
+
+    z_c = get_center(image, label, 0)
+    y_c = get_center(image, label, 1)
+    x_c = get_center(image, label, 2)
+
+    # 提取切片
+    axial_img = image[z_c, :, :]  # (Y, X)
+    axial_lbl = label[z_c, :, :]
+    coronal_img = image[:, y_c, :]  # (Z, X)
+    coronal_lbl = label[:, y_c, :]
+    sagittal_img = image[:, :, x_c]  # (Z, Y)
+    sagittal_lbl = label[:, :, x_c]
+
+    # 获取 spacing
+    # 在函数内部尝试从全局获取。
+    try:
+        # 尝试从全局变量中获取 spacing（需你在主程序中定义 global_spacing）
+        spacing = global_spacing
+    except NameError:
+        # 若未定义，则使用单位间距（不拉伸）
+        spacing = (1.0, 1.0, 1.0)
+        print("警告: 未设置 spacing，使用默认 1,1,1，图像比例可能失真。")
+
+    sz, sy, sx = spacing  # (Z, Y, X)
+
+    # 计算物理范围 (extent)
+    # 轴向: 形状 (Y, X) -> extent = [X_min, X_max, Y_min, Y_max]
+    x_min, x_max = 0, sx * axial_img.shape[1]
+    y_min, y_max = 0, sy * axial_img.shape[0]
+    z_min, z_max = 0, sz * coronal_img.shape[0]
+
+    extent_axial = [x_min, x_max, y_min, y_max]
+    extent_coronal = [x_min, x_max, z_min, z_max]
+    extent_sagittal = [y_min, y_max, z_min, z_max]
+
+    # ---- 创建画布 ----
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6), dpi=150)
+
+    # 辅助函数：标准化显示
+    def norm_img(img):
+        img = np.clip(img, 0, np.percentile(img, 99))
+        if img.max() - img.min() > 1e-6:
+            return (img - img.min()) / (img.max() - img.min() + 1e-8)
+        return img
+
+    # ---- (A) 轴向 ----
+    ax = axes[0]
+    ax.imshow(norm_img(axial_img), cmap='gray', extent=extent_axial, origin='upper')
+    # 病灶半透明叠加
+    if np.sum(axial_lbl) > 0:
+        ax.imshow(axial_lbl, cmap='autumn_r', extent=extent_axial, origin='upper', alpha=0.3, vmin=0.5, vmax=1)
+        ax.contour(axial_lbl, levels=[0.5], colors='red', linewidths=0.8, extent=extent_axial, origin='upper')
+    # 方向标注 (R在左, L在右)
+    ax.text(0.02, 0.98, 'R', transform=ax.transAxes, fontsize=14, fontweight='bold', color='yellow', ha='left',
+            va='top')
+    ax.text(0.98, 0.98, 'L', transform=ax.transAxes, fontsize=14, fontweight='bold', color='yellow', ha='right',
+            va='top')
+    ax.text(0.02, 0.02, 'P', transform=ax.transAxes, fontsize=14, fontweight='bold', color='cyan', ha='left',
+            va='bottom')
+    ax.text(0.98, 0.02, 'A', transform=ax.transAxes, fontsize=14, fontweight='bold', color='cyan', ha='right',
+            va='bottom')
+    ax.set_title(f'Axial (Z={z_c}, {sz:.2f}mm)', fontsize=14)
+    ax.set_xlabel('X (mm)')
+    ax.set_ylabel('Y (mm)')
+    ax.set_aspect('equal')
+
+    # ---- (B) 冠状 ----
+    ax = axes[1]
+    ax.imshow(norm_img(coronal_img), cmap='gray', extent=extent_coronal, origin='upper')
+    if np.sum(coronal_lbl) > 0:
+        ax.imshow(coronal_lbl, cmap='autumn_r', extent=extent_coronal, origin='upper', alpha=0.3, vmin=0.5, vmax=1)
+        ax.contour(coronal_lbl, levels=[0.5], colors='red', linewidths=0.8, extent=extent_coronal, origin='upper')
+    ax.text(0.02, 0.98, 'R', transform=ax.transAxes, fontsize=14, fontweight='bold', color='yellow', ha='left',
+            va='top')
+    ax.text(0.98, 0.98, 'L', transform=ax.transAxes, fontsize=14, fontweight='bold', color='yellow', ha='right',
+            va='top')
+    ax.text(0.02, 0.02, 'F', transform=ax.transAxes, fontsize=14, fontweight='bold', color='cyan', ha='left',
+            va='bottom')
+    ax.text(0.98, 0.02, 'H', transform=ax.transAxes, fontsize=14, fontweight='bold', color='cyan', ha='right',
+            va='bottom')
+    ax.set_title(f'Coronal (Y={y_c}, {sy:.2f}mm)', fontsize=14)
+    ax.set_xlabel('X (mm)')
+    ax.set_ylabel('Z (mm)')
+    ax.set_aspect('equal')
+
+    # ---- (C) 矢状 ----
+    ax = axes[2]
+    ax.imshow(norm_img(sagittal_img), cmap='gray', extent=extent_sagittal, origin='upper')
+    if np.sum(sagittal_lbl) > 0:
+        ax.imshow(sagittal_lbl, cmap='autumn_r', extent=extent_sagittal, origin='upper', alpha=0.3, vmin=0.5, vmax=1)
+        ax.contour(sagittal_lbl, levels=[0.5], colors='red', linewidths=0.8, extent=extent_sagittal, origin='upper')
+    ax.text(0.02, 0.98, 'A', transform=ax.transAxes, fontsize=14, fontweight='bold', color='yellow', ha='left',
+            va='top')
+    ax.text(0.98, 0.98, 'P', transform=ax.transAxes, fontsize=14, fontweight='bold', color='yellow', ha='right',
+            va='top')
+    ax.text(0.02, 0.02, 'F', transform=ax.transAxes, fontsize=14, fontweight='bold', color='cyan', ha='left',
+            va='bottom')
+    ax.text(0.98, 0.02, 'H', transform=ax.transAxes, fontsize=14, fontweight='bold', color='cyan', ha='right',
+            va='bottom')
+    ax.set_title(f'Sagittal (X={x_c}, {sx:.2f}mm)', fontsize=14)
+    ax.set_xlabel('Y (mm)')
+    ax.set_ylabel('Z (mm)')
+    ax.set_aspect('equal')
+
+    plt.suptitle(f"{title_prefix} {case_name}", fontsize=14)
+    plt.tight_layout()
+    save_path = OUTPUT_DIR / f"{case_name}_three_views.png"
+    plt.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='white')
+    plt.close()
+    print(f"  -> 三视图已保存: {save_path}")
 
 
 # ==================== 1. DICOM 处理 ====================
@@ -166,7 +270,8 @@ def process_nifti_case(image_path, label_path, case_idx):
     pixdim = header.get_zooms()  # (X, Y, Z) 方向的 spacing
     # 转置后 spacing 对应 (Z, Y, X)
     spacing = (pixdim[2], pixdim[1], pixdim[0])  # (Z, Y, X)
-
+    global global_spacing
+    global_spacing = spacing
     # 提取 origin 和 direction（从 affine 矩阵计算）
     origin = affine[:3, 3]  # 物理原点
     # direction cosines (旋转矩阵)
@@ -221,7 +326,7 @@ if __name__ == "__main__":
     # 查找 imagesTr 目录下的所有 .nii.gz 文件并按文件名排序
     images_dir = DATA_ROOT / "imagesTr"
     labels_dir = DATA_ROOT / "labelsTr"
-
+    global_spacing = (1, 1, 1)
     if not images_dir.exists() or not labels_dir.exists():
         print("\n" + "=" * 50)
         print("⚠️ 警告: 未找到 MSD Task09 Spleen 数据集！")
@@ -264,7 +369,7 @@ if __name__ == "__main__":
     print("\n" + "=" * 50)
     print(f"✅ 所有元数据已保存至: {csv_path}")
     print(f"✅ 三视图图片已保存至: {OUTPUT_DIR}")
-    print("\n请提交以下文件给老师验收：")
+    print("\n请提交以下文件：")
     print("  - read_medical_image.py (本脚本)")
     print(f"  - {csv_path}")
     print("  - 所有 *_three_views.png 图片")

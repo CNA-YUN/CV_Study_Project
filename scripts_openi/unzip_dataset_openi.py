@@ -1,13 +1,13 @@
 import zipfile
 import os
 from tqdm import tqdm  # 导入进度条库
-from c2net.context import prepare
+from c2net.context import prepare, upload_output
 
 c2net_context = prepare()
 
-source_zip = c2net_context.dataset_path + "/my_file.zip"
-target_dir = c2net_context.output_path + "/Output_Folder"
-os.makedirs(target_dir, exist_ok=True)
+source_zip = c2net_context.dataset_path + "/OxfordPet" + "/oxford-iiit-pet.zip"
+target_dir = c2net_context.output_path
+# os.makedirs(target_dir, exist_ok=True)
 
 with zipfile.ZipFile(source_zip, 'r') as zip_ref:
     file_list = zip_ref.infolist()
@@ -17,3 +17,5 @@ with zipfile.ZipFile(source_zip, 'r') as zip_ref:
         zip_ref.extract(file_info, path=target_dir)
 
 print("全部解压完成！")
+# 回传结果到openi，只有训练任务才能回传
+upload_output()

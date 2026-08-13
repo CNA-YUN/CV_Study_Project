@@ -14,7 +14,7 @@ warnings.filterwarnings("ignore")
 # ==================== 配置 ====================
 BASE_ROOT = Path.cwd().parent
 DATA_ROOT = BASE_ROOT / "data" / "Task09_Spleen" / "Task09_Spleen"
-OUTPUT_DIR = BASE_ROOT / "outputs" / "msd_spleen_preprocess"
+OUTPUT_DIR = BASE_ROOT / "outputs" / "m3_task3_spleen_preprocess"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # 固定预处理参数
@@ -25,28 +25,6 @@ NUM_CASES = 10
 
 
 # ==============================================
-
-def resample_volume(volume, current_spacing, target_spacing, order):
-    """
-    使用 scipy.ndimage.zoom 进行体素重采样
-    volume: 形状 (Z, Y, X)
-    current_spacing: (sz, sy, sx)
-    target_spacing: (tz, ty, tx)
-    order: 3 三线性（图像），0 最近邻（标签）
-    """
-    if current_spacing == target_spacing:
-        return volume, 1.0
-
-    # 计算缩放因子 (新体素 / 旧体素)
-    factors = [c / t for c, t in zip(current_spacing, target_spacing)]
-    # 确保输出形状不为零
-    new_shape = np.round(np.array(volume.shape) * np.array(factors)).astype(int)
-    # zoom 接受 shape 或 factor，用 factor 更安全，但避免因浮点误差导致形状偏差
-    # 使用 map_coordinates 更精确，但 zoom 配合 order 简单高效
-    resampled = zoom(volume, factors, order=order)
-    return resampled, factors
-
-
 def get_foreground_center(label, axis):
     """获取包含前景的质心切片（轴 0=Z, 1=Y, 2=X）"""
     if axis == 0:

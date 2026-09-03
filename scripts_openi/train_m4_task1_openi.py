@@ -36,7 +36,7 @@ def main():
 
     # ====== 改动3：读取 CSV（路径请根据实际存放位置修改） ======
     # 假设你的 CSV 放在代码根目录下的 data/ 文件夹内
-    csv_path = 'isic_inventory.csv'
+    csv_path = 'scripts_openi/isic_inventory.csv'
     df = pd.read_csv(csv_path)
 
     # ====== 改动4：路径替换 ======

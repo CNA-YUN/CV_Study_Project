@@ -1,0 +1,15 @@
+# 打包启智镜像时需要预装的依赖（离线安装，任务运行时不再联网）
+# 说明：torch 必须使用与镜像 CUDA 对应的 CUDA 版（不要装 +cpu），
+#       nnunetv2==2.8.1 要求 python>=3.10、torch>=2.1.2 且 !=2.9.*
+#       若镜像 python/torch 版本较低，改用 nnunetv2==2.2
+
+nnunetv2==2.8.1
+
+# 以下 nnunetv2 会自动带入，列出来便于核对镜像内容
+nibabel
+SimpleITK>=2.2.1
+scikit-image>=0.19.3
+matplotlib
+pandas
+seaborn
+tqdm

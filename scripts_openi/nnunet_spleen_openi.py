@@ -43,8 +43,9 @@ CONFIG = "3d_fullres"
 FOLD = 0
 NUM_TRAIN = 41
 PLANS = "nnUNetPlans"
-DEFAULT_TRAINER = "nnUNetTrainer"          # 默认 trainer = 1000 epoch 完整训练
-DEFAULT_PP_CONFIGS = ["3d_fullres"]        # 预处理配置（默认只做 baseline 必需的 3d_fullres）
+DEFAULT_TRAINER = "nnUNetTrainer"  # 默认 trainer = 1000 epoch 完整训练
+DEFAULT_PP_CONFIGS = ["3d_fullres"]  # 预处理配置（默认只做 baseline 必需的 3d_fullres）
+MSD_SUBDIR = "Task09_Spleen"  # 挂载点下的 MSD 目录名（<dataset_path>/Task09_Spleen）
 
 PY = sys.executable
 BIN_DIR = Path(PY).parent
@@ -118,6 +119,7 @@ class Ctx:
         self.dataset_folder = self.raw / DATASET_NAME
         self.prep_folder = self.prep / DATASET_NAME
         self.commands_file = self.out / "commands.txt"
+        self.msd_root = None  # 可选：--msd-root 显式指定的数据集目录
 
     def env(self) -> dict:
         env = os.environ.copy()
@@ -169,6 +171,9 @@ def run(ctx: Ctx, cmd, log_name: str, canonical: str = None, env: dict = None, c
 # step 0: 定位 MSD 源目录（挂载目录只读，输出一律写入 output_path）
 # --------------------------------------------------------------------------- #
 def find_msd_root(ctx: Ctx) -> Path:
+    def _is_msd(p: Path) -> bool:
+        return (p / "dataset.json").is_file() and (p / "imagesTr").is_dir() and (p / "labelsTr").is_dir()
+
     def _search(root):
         root = Path(root)
         for j in sorted(root.rglob("dataset.json")):
@@ -177,6 +182,22 @@ def find_msd_root(ctx: Ctx) -> Path:
                 return p
         return None
 
+        # 0) 显式指定（--msd-root），优先级最高
+
+    if getattr(ctx, "msd_root", None):
+        p = Path(ctx.msd_root)
+        if not _is_msd(p):
+            raise FileNotFoundError(f"--msd-root 不是 MSD 结构(需含 dataset.json/imagesTr/labelsTr): {p}")
+        return p
+
+        # 1) 启智挂载结构：<dataset_path>/Task09_Spleen/{dataset.json, imagesTr, labelsTr}
+    for cand in (ctx.dataset_path / MSD_SUBDIR,
+                 ctx.dataset_path / MSD_SUBDIR / MSD_SUBDIR,
+                 ctx.dataset_path):
+        if _is_msd(cand):
+            return cand
+
+        # 2) 兜底：其它层级
     found = _search(ctx.dataset_path)
     if found is not None:
         return found
@@ -480,6 +501,8 @@ def main():
     ap.add_argument("--device", default=None, help="默认 cuda（不可用时回落 cpu）")
     ap.add_argument("--np-pp", type=int, default=8, help="预处理/验证进程数")
     ap.add_argument("--pp-configs", nargs="+", default=DEFAULT_PP_CONFIGS)
+    ap.add_argument("--msd-root", default=None,
+                    help=f"显式指定 MSD 源目录（默认 <dataset_path>/{MSD_SUBDIR}）")
     args = ap.parse_args()
 
     print_environment()
@@ -494,6 +517,8 @@ def main():
 
     c2net_context = prepare()
     ctx = Ctx(c2net_context.dataset_path, c2net_context.output_path)
+    ctx.msd_root = args.msd_root
+    print(f"[ctx] msd_root     = {args.msd_root or (ctx.dataset_path / MSD_SUBDIR)}")
     print(f"[ctx] dataset_path = {ctx.dataset_path}")
     print(f"[ctx] output_path  = {ctx.out}")
     (ctx.out / "run_config.json").write_text(json.dumps(

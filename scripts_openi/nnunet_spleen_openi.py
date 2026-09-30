@@ -1,21 +1,24 @@
 """
-4.3.2 任务 2 —— 启智(OpenI) A100 版 nnU-Net v2 默认 baseline 全流程。
+4.3.2 任务 2 —— 启智(OpenI) A100 版 nnU-Net v2 默认 baseline 全流程（单文件入口）。
 
 数据集：MSD Task09 Spleen
 固定设置：Dataset901_SpleenStudy / 训练集 41 例 / 3d_fullres / fold 0 / 默认 nnUNetPlans
-依赖：镜像中已预装（torch(CUDA) + nnunetv2 + nibabel + matplotlib），本脚本不再联网安装。
+依赖：镜像中已预装（torch(CUDA) + nnunetv2 + nibabel + matplotlib），本脚本不联网安装。
 
-用法（平台启动命令）：
-    bash scripts_openi/run_nnunet_spleen.sh
-    # 或
-    python scripts_openi/nnunet_spleen_openi.py
-    python scripts_openi/nnunet_spleen_openi.py --steps convert verify plan      # 只做数据准备
-    python scripts_openi/nnunet_spleen_openi.py --steps train predict evaluate   # 只做训练+评估
+【启智平台用法】
+    启动文件：scripts_openi/nnunet_spleen_openi.py
+    可选参数：--steps convert verify plan        （只做数据准备，约 20~40 min）
+              --trainer nnUNetTrainer_250epochs  （时长受限时）
+              --device cuda   --np-pp 8
+
+流程：定位数据 -> 转换格式(+dataset.json) -> 完整性检查 -> 规划与预处理
+      -> 训练 3d_fullres fold 0 -> 预测 fold 0 验证集 -> 评估 -> 可视化 -> 报告 -> upload_output
 """
 
 import argparse
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -43,15 +46,62 @@ PLANS = "nnUNetPlans"
 DEFAULT_TRAINER = "nnUNetTrainer"          # 默认 trainer = 1000 epoch 完整训练
 DEFAULT_PP_CONFIGS = ["3d_fullres"]        # 预处理配置（默认只做 baseline 必需的 3d_fullres）
 
-BIN_DIR = Path(sys.executable).parent
 PY = sys.executable
+BIN_DIR = Path(PY).parent
+
+# 若镜像里没有 console script，则退化为直接调用 Python 入口函数
+ENTRY_POINTS = {
+    "nnUNetv2_convert_MSD_dataset": ("nnunetv2.dataset_conversion.convert_MSD_dataset", "entry_point"),
+    "nnUNetv2_plan_and_preprocess": ("nnunetv2.experiment_planning.plan_and_preprocess_entrypoints",
+                                     "plan_and_preprocess_entry"),
+    "nnUNetv2_preprocess": ("nnunetv2.experiment_planning.plan_and_preprocess_entrypoints", "preprocess_entry"),
+    "nnUNetv2_train": ("nnunetv2.run.run_training", "run_training_entry"),
+    "nnUNetv2_predict": ("nnunetv2.inference.predict_from_raw_data", "predict_entry_point"),
+    "nnUNetv2_evaluate_folder": ("nnunetv2.evaluation.evaluate_predictions", "evaluate_folder_entry_point"),
+}
+
+
+# --------------------------------------------------------------------------- #
+# 环境自检
+# --------------------------------------------------------------------------- #
+def print_environment():
+    import importlib.metadata as md
+    print("\n========== Environment ==========")
+    print("python      :", platform.python_version(), "|", platform.platform())
+    print("cpu count   :", os.cpu_count())
+    try:
+        st = shutil.disk_usage(Path.cwd())
+        print(f"disk free   : {st.free / 1024 ** 3:.1f} GB")
+    except Exception:
+        pass
+    try:
+        import torch
+        cuda = torch.cuda.is_available()
+        print("torch       :", torch.__version__)
+        print("cuda avail  :", cuda)
+        if cuda:
+            print("gpu         :", torch.cuda.get_device_name(0),
+                  f"| mem: {torch.cuda.get_device_properties(0).total_memory / 1024 ** 3:.1f} GB")
+    except Exception as e:
+        print("torch       : NOT AVAILABLE ->", e)
+    for p in ("nnunetv2", "nibabel", "SimpleITK", "matplotlib"):
+        try:
+            print(f"{p:<12}:", md.version(p))
+        except Exception as e:
+            print(f"{p:<12}: NOT FOUND ({e})")
+    try:
+        print(subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True,
+                             timeout=60).stdout.strip() or "(no nvidia-smi)")
+    except Exception:
+        pass
+    print("=================================\n")
 
 
 # --------------------------------------------------------------------------- #
 # 路径 & 运行工具
 # --------------------------------------------------------------------------- #
 class Ctx:
-    def __init__(self, dataset_path: str, output_path: str):
+    def __init__(self, dataset_path, output_path):
         self.dataset_path = Path(dataset_path)
         self.out = Path(output_path) / "m4_task2_nnunet_spleen"
         self.raw = self.out / "nnUNet_raw"
@@ -78,27 +128,29 @@ class Ctx:
         return env
 
 
-def resolve_console_script(name: str):
-    exe = BIN_DIR / name
-    if exe.exists():
-        return [str(exe)]
-    found = shutil.which(name)
-    if found:
-        return [found]
-    return None
+def resolve_cmd(name: str, arg_list):
+    """优先用 console script；找不到则直接调 Python 入口函数（sys.argv 注入参数）。"""
+    args = [str(a) for a in arg_list]
+    for cand in (BIN_DIR / name, shutil.which(name)):
+        if cand and Path(cand).exists():
+            return [str(cand)] + args, f"{name} " + " ".join(args)
+    mod, func = ENTRY_POINTS[name]
+    code = (f"import sys; sys.argv = [{name!r}] + {args!r};"
+            f" from {mod} import {func}; {func}()")
+    return [PY, "-c", code], f"{name} " + " ".join(args)
 
 
-def run(ctx: Ctx, cmd, log_name: str, env: dict = None, check: bool = True) -> int:
+def run(ctx: Ctx, cmd, log_name: str, canonical: str = None, env: dict = None, check: bool = True) -> int:
     printable = " ".join(str(c) for c in cmd)
     print("\n" + "=" * 78, flush=True)
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] $ {printable}", flush=True)
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] $ {canonical or printable}", flush=True)
     print("=" * 78, flush=True)
     with open(ctx.commands_file, "a", encoding="utf-8") as fh:
-        fh.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {printable}\n")
+        fh.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {canonical or printable}\n")
     log_path = ctx.logs / f"{log_name}.log"
     t0 = time.time()
     with open(log_path, "w", encoding="utf-8", errors="replace") as fh:
-        fh.write(f"# command: {printable}\n\n")
+        fh.write(f"# command: {canonical or printable}\n\n")
         proc = subprocess.Popen([str(c) for c in cmd], env=env or ctx.env(),
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, encoding="utf-8", errors="replace", bufsize=1)
@@ -109,12 +161,12 @@ def run(ctx: Ctx, cmd, log_name: str, env: dict = None, check: bool = True) -> i
         fh.write(f"\n# exit code: {proc.returncode}\n# elapsed: {time.time() - t0:.1f} s\n")
     print(f"[done] exit={proc.returncode}, elapsed={time.time() - t0:.1f}s -> {log_path}", flush=True)
     if check and proc.returncode != 0:
-        raise RuntimeError(f"命令失败 exit={proc.returncode}: {printable}")
+        raise RuntimeError(f"命令失败 exit={proc.returncode}: {canonical or printable}")
     return proc.returncode
 
 
 # --------------------------------------------------------------------------- #
-# step 0: 定位 MSD 源目录（挂载目录为只读，输出一律写入 output_path）
+# step 0: 定位 MSD 源目录（挂载目录只读，输出一律写入 output_path）
 # --------------------------------------------------------------------------- #
 def find_msd_root(ctx: Ctx) -> Path:
     def _search(root):
@@ -158,6 +210,7 @@ def step_convert(ctx: Ctx, args):
         return
     src = find_msd_root(ctx)
     print(f"[convert] MSD 源目录: {src}")
+
     # 转换器用文件夹名推断任务名 -> 用符号链接得到 Task09_SpleenStudy
     link_parent = ctx.out / "_msd_src"
     link_parent.mkdir(parents=True, exist_ok=True)
@@ -166,14 +219,9 @@ def step_convert(ctx: Ctx, args):
         os.symlink(src, link, target_is_directory=True)
     print(f"[convert] symlink: {link} -> {src}")
 
-    cmd = resolve_console_script("nnUNetv2_convert_MSD_dataset")
-    if cmd is None:  # 兜底：直接调用 API（CLI 的 __main__ 里是硬编码路径，不能用 -m）
-        code = ("from nnunetv2.dataset_conversion.convert_MSD_dataset import convert_msd_dataset;"
-                f"convert_msd_dataset(r'{link}', {DATASET_ID}, {args.np_pp})")
-        cmd = [PY, "-c", code]
-    else:
-        cmd = cmd + ["-i", str(link), "-overwrite_id", str(DATASET_ID), "-np", str(args.np_pp)]
-    run(ctx, cmd, "01_convert_msd_to_nnunet")
+    cmd, canonical = resolve_cmd("nnUNetv2_convert_MSD_dataset",
+                                 ["-i", str(link), "-overwrite_id", str(DATASET_ID), "-np", str(args.np_pp)])
+    run(ctx, cmd, "01_convert_msd_to_nnunet", canonical)
 
     n_img = len(list((ctx.dataset_folder / "imagesTr").glob("*.nii.gz")))
     n_lbl = len(list((ctx.dataset_folder / "labelsTr").glob("*.nii.gz")))
@@ -182,8 +230,7 @@ def step_convert(ctx: Ctx, args):
     assert n_img == NUM_TRAIN and n_lbl == NUM_TRAIN, f"训练样本数应为 {NUM_TRAIN}"
 
     ds = json.loads((ctx.dataset_folder / "dataset.json").read_text(encoding="utf-8"))
-    (ctx.out / "dataset.json").write_text(
-        json.dumps(ds, indent=2, ensure_ascii=False), encoding="utf-8")
+    (ctx.out / "dataset.json").write_text(json.dumps(ds, indent=2, ensure_ascii=False), encoding="utf-8")
     print("[convert] dataset.json:\n" + json.dumps(ds, indent=2, ensure_ascii=False))
 
 
@@ -193,19 +240,18 @@ def step_convert(ctx: Ctx, args):
 def step_verify(ctx: Ctx, args):
     code = ("from nnunetv2.experiment_planning.verify_dataset_integrity import verify_dataset_integrity;"
             f"verify_dataset_integrity(r'{ctx.dataset_folder}', {args.np_pp})")
-    run(ctx, [PY, "-c", code], "02_verify_dataset_integrity")
+    run(ctx, [PY, "-c", code], "02_verify_dataset_integrity",
+        f"nnUNetv2_verify_dataset_integrity {ctx.dataset_folder} -np {args.np_pp}")
 
 
 # --------------------------------------------------------------------------- #
 # step 3: 指纹提取 + 实验规划 + 预处理
 # --------------------------------------------------------------------------- #
 def step_plan(ctx: Ctx, args):
-    cmd = resolve_console_script("nnUNetv2_plan_and_preprocess")
-    if cmd is None:
-        cmd = [PY, "-m", "nnunetv2.experiment_planning.plan_and_preprocess_entrypoints"]
-    cmd += ["-d", str(DATASET_ID), "--verify_dataset_integrity",
-            "-c", *args.pp_configs, "-np", str(args.np_pp), "--no_pbar"]
-    run(ctx, cmd, "03_plan_and_preprocess")
+    cmd, canonical = resolve_cmd("nnUNetv2_plan_and_preprocess",
+                                 ["-d", str(DATASET_ID), "--verify_dataset_integrity",
+                                  "-c", *args.pp_configs, "-np", str(args.np_pp), "--no_pbar"])
+    run(ctx, cmd, "03_plan_and_preprocess", canonical)
 
     plans_file = ctx.prep_folder / f"{PLANS}.json"
     plans = json.loads(plans_file.read_text(encoding="utf-8"))
@@ -219,12 +265,10 @@ def step_plan(ctx: Ctx, args):
 # step 4: 训练 3d_fullres fold 0
 # --------------------------------------------------------------------------- #
 def step_train(ctx: Ctx, args):
-    cmd = resolve_console_script("nnUNetv2_train")
-    if cmd is None:
-        cmd = [PY, "-m", "nnunetv2.run.run_training"]
-    cmd += [str(DATASET_ID), CONFIG, str(FOLD), "-tr", args.trainer,
-            "-p", PLANS, "-device", args.device, "-num_gpus", "1", "--npz"]
-    run(ctx, cmd, "04_train_3d_fullres_fold0")
+    cmd, canonical = resolve_cmd("nnUNetv2_train",
+                                 [str(DATASET_ID), CONFIG, str(FOLD), "-tr", args.trainer,
+                                  "-p", PLANS, "-device", args.device, "-num_gpus", "1", "--npz"])
+    run(ctx, cmd, "04_train_3d_fullres_fold0", canonical)
     print(f"[train] 模型目录: {ctx.res / DATASET_NAME / f'{args.trainer}__{PLANS}__{CONFIG}' / f'fold_{FOLD}'}")
 
 
@@ -239,10 +283,8 @@ def _prepare_val(ctx: Ctx):
     val_images.mkdir(parents=True, exist_ok=True)
     val_gt.mkdir(parents=True, exist_ok=True)
     for case in val_ids:
-        shutil.copy(ctx.dataset_folder / "imagesTr" / f"{case}_0000.nii.gz",
-                    val_images / f"{case}_0000.nii.gz")
-        shutil.copy(ctx.dataset_folder / "labelsTr" / f"{case}.nii.gz",
-                    val_gt / f"{case}.nii.gz")
+        shutil.copy(ctx.dataset_folder / "imagesTr" / f"{case}_0000.nii.gz", val_images / f"{case}_0000.nii.gz")
+        shutil.copy(ctx.dataset_folder / "labelsTr" / f"{case}.nii.gz", val_gt / f"{case}.nii.gz")
     print(f"[predict] fold {FOLD} 验证集({len(val_ids)} 例): {val_ids}")
     return val_ids
 
@@ -260,13 +302,11 @@ def step_predict(ctx: Ctx, args):
             break
     print(f"[predict] 使用 checkpoint: {chk}")
 
-    cmd = resolve_console_script("nnUNetv2_predict")
-    if cmd is None:
-        raise RuntimeError("未找到 nnUNetv2_predict，请确认 nnunetv2 已正确安装（含 console script）")
-    cmd += ["-d", str(DATASET_ID), "-c", CONFIG, "-f", str(FOLD), "-tr", args.trainer,
-            "-i", str(val_images), "-o", str(val_preds), "-chk", chk,
-            "-device", args.device, "-npp", "3", "-nps", "3", "--disable_progress_bar"]
-    run(ctx, cmd, "05_predict_fold0_val")
+    cmd, canonical = resolve_cmd("nnUNetv2_predict",
+                                 ["-d", str(DATASET_ID), "-c", CONFIG, "-f", str(FOLD), "-tr", args.trainer,
+                                  "-i", str(val_images), "-o", str(val_preds), "-chk", chk,
+                                  "-device", args.device, "-npp", "3", "-nps", "3", "--disable_progress_bar"])
+    run(ctx, cmd, "05_predict_fold0_val", canonical)
     print(f"[predict] 预测完成: {len(list(val_preds.glob('*.nii.gz')))} / {len(val_ids)} 例")
 
 
@@ -277,14 +317,12 @@ def step_evaluate(ctx: Ctx, args):
     val_gt = ctx.pred / "val_gt"
     val_preds = ctx.pred / "val_preds"
     summary = ctx.metrics / "summary.json"
-    cmd = resolve_console_script("nnUNetv2_evaluate_folder")
-    if cmd is None:
-        raise RuntimeError("未找到 nnUNetv2_evaluate_folder，请确认 nnunetv2 已正确安装")
-    cmd += [str(val_gt), str(val_preds),
-            "-djfile", str(ctx.dataset_folder / "dataset.json"),
-            "-pfile", str(ctx.prep_folder / f"{PLANS}.json"),
-            "-o", str(summary), "-np", str(args.np_pp)]
-    run(ctx, cmd, "06_evaluate_folder")
+    cmd, canonical = resolve_cmd("nnUNetv2_evaluate_folder",
+                                 [str(val_gt), str(val_preds),
+                                  "-djfile", str(ctx.dataset_folder / "dataset.json"),
+                                  "-pfile", str(ctx.prep_folder / f"{PLANS}.json"),
+                                  "-o", str(summary), "-np", str(args.np_pp)])
+    run(ctx, cmd, "06_evaluate_folder", canonical)
     print("[evaluate] " + json.dumps(
         json.loads(summary.read_text(encoding="utf-8"))["foreground_mean"], indent=2))
 
@@ -380,9 +418,15 @@ def step_report(ctx: Ctx, args):
     if summary_json.exists():
         official = json.dumps(json.loads(summary_json.read_text(encoding="utf-8"))["foreground_mean"],
                               indent=2, ensure_ascii=False)
-    md = f"""# 默认 baseline（启智 A100）— Dataset901_SpleenStudy / 3d_fullres / fold 0
+    plans_info = ""
+    plans_file = ctx.prep_folder / f"{PLANS}.json"
+    if plans_file.exists():
+        cm = json.loads(plans_file.read_text(encoding="utf-8"))["configurations"][CONFIG]
+        plans_info = (f"spacing={cm.get('spacing')}, patch_size={cm.get('patch_size')}, "
+                      f"batch_size={cm.get('batch_size')}")
+    md = f"""# 默认 baseline（启智 A100）— {DATASET_NAME} / {CONFIG} / fold {FOLD}
 
-> 仅呈现默认 baseline（未修改 plans / trainer / 数据增强）。修改版结果需另起一节。
+> 仅呈现默认 baseline（未修改 plans / trainer / 数据增强）。修改版结果需另起一节单独列出。
 
 ## 固定设置
 | 项目 | 取值 |
@@ -390,8 +434,9 @@ def step_report(ctx: Ctx, args):
 | 数据集 | MSD Task09 Spleen（41 训练 / 20 测试，测试无标签） |
 | 任务名 | {DATASET_NAME}（ID {DATASET_ID}） |
 | 配置 | {CONFIG}，plans = {PLANS}（nnU-Net 自动规划） |
+| plans 摘要 | {plans_info or 'N/A'} |
 | fold | {FOLD} |
-| trainer | {args.trainer} |
+| trainer | {args.trainer}（{'1000 epoch 完整训练' if args.trainer == DEFAULT_TRAINER else '非完整训练'}） |
 | device | {args.device} |
 | 预处理配置 | {', '.join(args.pp_configs)}，进程数 {args.np_pp} |
 
@@ -400,12 +445,12 @@ def step_report(ctx: Ctx, args):
 
 官方 `evaluate_folder` foreground_mean：
 ```
-{official if official else 'N/A'}
+{official or 'N/A'}
 ```
 
 ## 产物
-- `dataset.json`、`commands.txt`
-- `logs/` 每步日志
+- `dataset.json`、`commands.txt`、`run_config.json`
+- `logs/` 每一步日志
 - `metrics/summary.json`、`metrics/per_case_dice.csv`
 - `visualizations/` 预测叠加图与逐例 Dice 柱状图
 - `nnUNet_results/{DATASET_NAME}/{args.trainer}__{PLANS}__{CONFIG}/fold_{FOLD}/`
@@ -428,7 +473,7 @@ STEPS = {
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--steps", nargs="+", default=list(STEPS.keys()),
+    ap.add_argument("--steps", nargs="+", default=["all"],
                     choices=list(STEPS.keys()) + ["all"])
     ap.add_argument("--trainer", default=DEFAULT_TRAINER,
                     help="默认 nnUNetTrainer(1000 epoch)；时间受限可用 nnUNetTrainer_250epochs")
@@ -437,15 +482,14 @@ def main():
     ap.add_argument("--pp-configs", nargs="+", default=DEFAULT_PP_CONFIGS)
     args = ap.parse_args()
 
+    print_environment()
+
     try:
         import torch
         cuda = torch.cuda.is_available()
-        print(f"[env] torch={torch.__version__}, cuda_available={cuda}, "
-              f"gpu={torch.cuda.get_device_name(0) if cuda else '-'}")
         if args.device is None:
             args.device = "cuda" if cuda else "cpu"
-    except Exception as e:  # pragma: no cover
-        print(f"[env] torch 检查失败: {e}")
+    except Exception:
         args.device = args.device or "cpu"
 
     c2net_context = prepare()

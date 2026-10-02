@@ -220,3 +220,5 @@ data
 outputs
 scripts/upload_to_openi.py
 scripts/download_from_openi.py
+external
+ckpts

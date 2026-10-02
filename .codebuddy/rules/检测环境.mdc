@@ -1,0 +1,9 @@
+---
+description: 
+alwaysApply: true
+enabled: true
+updatedAt: 2026-10-01T09:43:52.488Z
+provider: 
+---
+
+检测环境由用户手动检测，智能体通过用户检测环境后提供的信息判断环境是否正常

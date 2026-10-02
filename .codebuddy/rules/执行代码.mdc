@@ -1,0 +1,9 @@
+---
+description: 
+alwaysApply: true
+enabled: true
+updatedAt: 2026-10-01T10:16:30.471Z
+provider: 
+---
+
+需要执行命令或脚本时，由用户手动执行，智能体根据用户提供的终端输出内容判断运行结果
